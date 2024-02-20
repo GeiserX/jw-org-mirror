@@ -1,36 +1,60 @@
 import os
-import time
-import requests
-from selenium import webdriver
-from selenium.webdriver.common.by import By
+from urllib.parse import urljoin, urlparse, urlunparse
+from bs4 import BeautifulSoup
+#from selenium import webdriver
 import undetected_chromedriver as uc
 
-options = uc.ChromeOptions()
-#options.add_argument('--headless')
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--window-size=1920,1080")
-options.add_argument("--disable-blink-features=AutomationControlled")
-options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36")
-driver = uc.Chrome(options=options)
+def extract_links(driver, visited_links):
+    html = driver.page_source
+    soup = BeautifulSoup(html, 'html.parser')
+    new_links = set()
+    for link in soup.find_all('a', href=True):
+        parsed_url = urljoin(driver.current_url, link['href'])
+        if parsed_url.startswith("") and parsed_url not in visited_links:
+            new_links.add(parsed_url)
+    return new_links
 
-url = "https://www.jw.org/es/biblioteca/videos/#es/mediaitems/BJF/pub-pk_50_VIDEO"
-driver.get(url)
+def recursive_crawl(driver, url, visited_links):
+    visited_links.add(url)
+    driver.get(url)
+    local_url = urlparse(url)._replace(netloc="", scheme="")
+    local_folder = urlunparse(local_url).removeprefix("/")
 
-# Wait for the page to fully load
-time.sleep(5)
-video_element = driver.find_element(By.XPATH, "//video[contains(@class, 'vjs-tech')]")
-video_src = video_element.get_attribute("src")
-video_poster = video_element.get_attribute("poster")
-video_filename = "video.mp4"
-response = requests.get(video_src)
-with open(video_filename, "wb") as f:
-    f.write(response.content)
+    if not os.path.exists(local_folder):
+        os.makedirs(local_folder)
+    
+    with open(local_folder, "w", encoding="utf-8") as file:
+        file.write(driver.page_source)
+    
+    new_links = extract_links(driver, visited_links)
 
-# Save the HTML
-html_filename = "webpage_mirror.html"
-with open(html_filename, "w", encoding="utf-8") as file:
-    file.write(driver.page_source)
+    for new_link in new_links:
+        if new_link not in visited_links:
+            recursive_crawl(driver, new_link, visited_links)
 
-# Close the browser
-driver.quit()
+
+if __name__ == '__main__':
+    base_url = 'https://www.jw.org/'
+    language = "es"
+    url = base_url + language
+
+    options = uc.ChromeOptions()
+    options.headless = True
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+
+    visited_links = set()
+    with uc.Chrome(options=options) as driver:
+        recursive_crawl(driver, url, visited_links)
+
+
+    # with uc.Chrome(options=options) as driver:
+    #     driver.get(url)
+    #     with open(local_folder + language + "/index.html", "w", encoding="utf-8") as file:
+    #         file.write(driver.page_source)
+    #     links = extract_links(driver, url)
+
+
+
+    #     visited_links = set(url)
+    #     scrape(driver, url, links)
