@@ -10,7 +10,7 @@ def extract_links(driver, visited_links):
     new_links = set()
     for link in soup.find_all('a', href=True):
         parsed_url = urljoin(driver.current_url, link['href'])
-        if parsed_url.startswith("") and parsed_url not in visited_links:
+        if link['href'].startswith("/" + language) and parsed_url not in visited_links:
             new_links.add(parsed_url)
     return new_links
 
@@ -23,7 +23,7 @@ def recursive_crawl(driver, url, visited_links):
     if not os.path.exists(local_folder):
         os.makedirs(local_folder)
     
-    with open(local_folder, "w", encoding="utf-8") as file:
+    with open(local_folder + "index.html", "w", encoding="utf-8") as file:
         file.write(driver.page_source)
     
     new_links = extract_links(driver, visited_links)
@@ -39,7 +39,7 @@ if __name__ == '__main__':
     url = base_url + language
 
     options = uc.ChromeOptions()
-    options.headless = True
+    #options.headless = True
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
 
