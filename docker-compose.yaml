@@ -1,0 +1,11 @@
+version: '3.9'
+services:
+  jw-org-mirror:
+    image: drumsergio/jw-org-clone:latest
+    ports:
+      - "80:80"
+    volumes:
+      - G:/jw_org:/data/jw_org
+
+volumes:
+  jw_org:
