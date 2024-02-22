@@ -6,11 +6,19 @@ import undetected_chromedriver as uc
 from urllib.parse import urlparse, urlunparse
 import time
 import shutil
-import re
+import logging
+import sys
 
 locationdir = "/data/jw_org/"
 language = "es"
 fulldir = locationdir + language
+
+logger = logging.getLogger('mylogger')
+logger.setLevel(logging.INFO) # set logger level
+logFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+consoleHandler = logging.StreamHandler(sys.stdout) #set streamhandler to stdout
+consoleHandler.setFormatter(logFormatter)
+logger.addHandler(consoleHandler)
 
 def get_sitemap():
     requests_cache.install_cache(fulldir + '/sitemap')
@@ -22,8 +30,8 @@ def get_sitemap():
     url_locs = soup.find_all("loc")
     for url in url_locs:
         links.append(url.text)
-    return ["https://www.jw.org/es/biblioteca/videos/#es/mediaitems/FeaturedLibraryVideos/docid-502018518_1_VIDEO"]
-    #return links
+    #return ["https://www.jw.org/es/biblioteca/videos/#es/mediaitems/FeaturedLibraryVideos/docid-502018518_1_VIDEO"]
+    return links
 
 def download_video(url, filename):
     with requests.get(url, stream=True) as r:
@@ -31,7 +39,6 @@ def download_video(url, filename):
             shutil.copyfileobj(r.raw, f)
 
 def download_webpage(url, driver):
-    print(url)
     driver.get(url)
     local_url = urlparse(url)._replace(netloc="", scheme="")
     local_folder = fulldir + urlunparse(local_url)
@@ -67,7 +74,7 @@ if __name__ == '__main__':
     options.headless = True
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    driver = uc.Chrome(options=options, version_main=121)
+    driver = uc.Chrome(options=options, version_main=121) # chromium version 121 available in the container
     for link in links:
+        logger.info(link)
         download_webpage(link, driver)
-#download_webpage("https://www.jw.org/es/biblioteca/videos/#es/mediaitems/FeaturedLibraryVideos/docid-502018518_1_VIDEO", driver)
