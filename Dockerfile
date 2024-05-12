@@ -1,11 +1,21 @@
-FROM python:3.11-slim 
-# lxml not working in 3.12 gcc build-essential pkg-config python3-dev 
-WORKDIR /app
+FROM selenium/standalone-edge:121.0
+# lxml not working in python 3.12
+
+USER root
+
 RUN apt-get update && \
-    apt-get install -y libxml2-dev libxslt-dev chromium && \
+    apt-get install -y libxml2-dev libxslt-dev build-essential libssl-dev libffi-dev python3-dev python3-pip && \
     apt-get clean
+
+ENV DISPLAY=:99
+
+WORKDIR /app
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+RUN playwright install 
+
 COPY . .
 EXPOSE 80
-CMD ["python", "-u", "src/main.py"]
+CMD ["python3", "-u", "src/main2.py"]

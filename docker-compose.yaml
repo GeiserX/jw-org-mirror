@@ -1,17 +1,21 @@
 version: '3.9'
 services:
   jw-org-mirror:
-    image: drumsergio/jw-org-clone:latest
+    image: drumsergio/jw-org-mirror:latest
     volumes:
       - G:/jw_org:/data/jw_org
 
-  nginx:
-    image: nginx:latest
-    volumes:
-      - G:/jw_org:/usr/share/nginx/html
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
-    ports:
-      - "80:80"
+  # nginx:
+  #   image: nginx:latest
+  #   volumes:
+  #     - G:/jw_org:/usr/share/nginx/html
+  #     - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+  #   ports:
+  #     - "80:80"
 
 volumes:
   jw_org:
+    # driver_opts:
+    #   type: nfs 
+    #   o: "addr=192.168.10.5" 
+    #   device: ":/Multimedia/MusicaSergio"
