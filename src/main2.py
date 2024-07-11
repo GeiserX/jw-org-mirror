@@ -9,9 +9,8 @@ import logging
 import sys
 from playwright.sync_api import sync_playwright
 
-# destlocationdir = "/data/"
 language = "es"
-fulldir = "/data/" # + language
+fulldir = "/ShareMedia/jworg/data"
 
 logger = logging.getLogger('mylogger')
 logger.setLevel(logging.INFO)  # set logger level
@@ -22,15 +21,15 @@ logger.addHandler(consoleHandler)
 
 
 def get_sitemap():
-    requests_cache.install_cache(fulldir + '/sitemap')
-    session = requests_cache.CachedSession('sitemap', expire_after=86400)  # 24h
-    jw_org = "https://www.jw.org/"
-    links = []
-    r = requests.get(jw_org + language + "/sitemap.xml")
-    soup = BeautifulSoup(r.text, "lxml")
-    url_locs = soup.find_all("loc")
-    for url in url_locs:
-        links.append(url.text)
+    # requests_cache.install_cache(fulldir + '/sitemap')
+    # session = requests_cache.CachedSession('sitemap', expire_after=86400)  # 24h
+    # jw_org = "https://www.jw.org/"
+    # links = []
+    # r = requests.get(jw_org + language + "/sitemap.xml")
+    # soup = BeautifulSoup(r.text, "lxml")
+    # url_locs = soup.find_all("loc")
+    # for url in url_locs:
+    #     links.append(url.text)
     return ["https://www.jw.org/es/biblioteca/videos/#es/mediaitems/FeaturedLibraryVideos/docid-502018518_1_VIDEO"]
     # return links
 
@@ -43,7 +42,7 @@ def download_video(url, filename):
 
 def download_webpage(url, context):
     page = context.new_page()
-    page.goto(url)
+    page.goto(url, wait_until='domcontentloaded')
     local_url = urlparse(url)._replace(netloc="", scheme="")
     local_folder = fulldir + urlunparse(local_url)
     if not os.path.exists(local_folder):
@@ -80,10 +79,13 @@ if __name__ == '__main__':
         os.makedirs(fulldir)
     links = get_sitemap()
     headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "en-GB,en-NZ;q=0.9,en-AU;q=0.8,en;q=0.7,en-US;q=0.6",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        # browser = p.chromium.launch()
+        browser = p.firefox.connect('ws://192.168.10.100:3030/firefox/playwright?token=YGxoYfrARhtkSVxyfbfLwHc9me4afP9VS3y89EVa')
         context = browser.new_context(extra_http_headers=headers)
         for link in links:
             logger.info(link)
