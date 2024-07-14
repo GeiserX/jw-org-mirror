@@ -1,21 +1,10 @@
-version: '3.9'
 services:
   jw-org-mirror:
-    image: drumsergio/jw-org-mirror:latest
+    build: .
+    #image: drumsergio/jw-org-mirror:0.0.1
     volumes:
-      - G:/jw_org:/data/jw_org
-
-  # nginx:
-  #   image: nginx:latest
-  #   volumes:
-  #     - G:/jw_org:/usr/share/nginx/html
-  #     - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
-  #   ports:
-  #     - "80:80"
-
-volumes:
-  jw_org:
-    # driver_opts:
-    #   type: nfs 
-    #   o: "addr=192.168.10.5" 
-    #   device: ":/Multimedia/MusicaSergio"
+      - /ShareMedia/jworg:/jworg:rw #/mnt/user/ShareMedia used if used outside code-server - dind in use
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    privileged: true
