@@ -31,23 +31,25 @@ def get_sitemap():
     for url in url_locs:
         links.append(url.text)
     return links
-    # return ["https://www.jw.org/es/biblioteca/videos/#es/mediaitems/FeaturedLibraryVideos/docid-502018518_1_VIDEO"
 
 def download_asset(url, local_path):
     logger.info(f"Downloading asset {url}")
     local_dir = os.path.dirname(local_path)
+    filename = os.path.basename(urlparse(url).path) or 'index.html'
+    local_path = os.path.join(local_dir, filename)
+    
     if not os.path.exists(local_dir):
         os.makedirs(local_dir)
-    filename = os.path.basename(urlparse(url).path)
-    logger.info(f"Downloading asset {filename}")
-    local_path = os.path.join(local_dir, filename)
+        
     with requests.get(url, stream=True, timeout=120) as r:
         with open(local_path, "wb") as f:
             shutil.copyfileobj(r.raw, f)
- 
-def is_asset_url(url):
+
+def is_asset_url(url, base_url):
     url_parts = urlsplit(url)
-    return any(substring in url_parts.netloc for substring in ["akamai", "jw-cdn", "jw.org"]) or bool(url_parts.path)
+    if url_parts.netloc:  # Full URLs
+        return any(substring in url_parts.netloc for substring in ["akamai", "jw-cdn"]) or (url_parts.netloc == urlsplit(base_url).netloc and ("." in url_parts.path or url_parts.path in ["/", ""]))
+    return True  # Relative URLs are also assets
 
 def download_webpage(url, context):
     page = context.new_page()
@@ -71,7 +73,7 @@ def download_webpage(url, context):
     ]:
         for tag in bs_page.find_all(tag_name, **{attribute_name: True}):
             asset_url = tag[attribute_name]
-            if is_asset_url(asset_url):
+            if is_asset_url(asset_url, url):
                 full_url = urljoin("https://www.jw.org", asset_url) if not urlsplit(asset_url).netloc else asset_url
                 assets.append((tag, attribute_name, full_url))
 
@@ -79,29 +81,19 @@ def download_webpage(url, context):
     for tag_info in assets:
         tag = tag_info[0]
         attribute_name = tag_info[1]
-        asset_url = tag_info[2] if len(tag_info) > 2 else tag[attribute_name]
+        asset_url = tag_info[2]
 
-        asset_basename = os.path.basename(urlparse(asset_url).path)
+        asset_basename = os.path.basename(urlparse(asset_url).path) or 'index.html'
         if '?' in asset_basename:
             asset_basename = asset_basename.split('?')[0]
 
-        if len(tag_info) > 2:
-            local_asset_path = os.path.join(fulldir, urlparse(url).path.lstrip('/'), asset_basename)
-            relative_path = os.path.relpath(local_asset_path, fulldir)
-        else:
-            local_asset_path = os.path.join(fulldir, "assets", asset_basename)
-            relative_path = f"/jworg/assets/{asset_basename}"
+        local_asset_path = os.path.join(fulldir, "assets", asset_basename)
+        relative_path = f"/jworg/assets/{asset_basename}"
 
         download_asset(asset_url, local_asset_path)
         tag[attribute_name] = relative_path
 
-    # Remove the specific inline script block
-    # for script_tag in bs_page.find_all("script", {"type": "text/javascript"}):
-    #     if script_tag.string and "var theme;" in script_tag.string:
-    #         logger.info("Removing specific <script> block with theme-related code.")
-    #         script_tag.decompose()
-
-    # Handle videos
+    # Handle specific operations like video tags
     video = bs_page.find("video")
     if video:
         video_url = video["src"]
@@ -135,7 +127,7 @@ if __name__ == '__main__':
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "en-GB,en-NZ;q=0.9,en-AU;q=0.8,en;q=0.7,en-US;q=0.6",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     with sync_playwright() as p:
         browser = p.firefox.connect('ws://192.168.10.100:3030/firefox/playwright?token=YGxoYfrARhtkSVxyfbfLwHc9me4afP9VS3y89EVa')
