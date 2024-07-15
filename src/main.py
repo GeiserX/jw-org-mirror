@@ -44,6 +44,10 @@ def download_asset(url, local_path):
     with requests.get(url, stream=True, timeout=120) as r:
         with open(local_path, "wb") as f:
             shutil.copyfileobj(r.raw, f)
+ 
+def is_asset_url(url):
+    url_parts = urlsplit(url)
+    return any(substring in url_parts.netloc for substring in ["akamai", "jw-cdn", "jw.org"]) or bool(url_parts.path)
 
 def download_webpage(url, context):
     page = context.new_page()
@@ -67,11 +71,8 @@ def download_webpage(url, context):
     ]:
         for tag in bs_page.find_all(tag_name, **{attribute_name: True}):
             asset_url = tag[attribute_name]
-            netloc = urlsplit(asset_url).netloc
-            if "akamai" in netloc or "jw-cdn" in netloc or "jw.org" in netloc:
-                assets.append((tag, attribute_name))
-            elif not netloc:
-                full_url = urljoin("https://www.jw.org", asset_url)
+            if is_asset_url(asset_url):
+                full_url = urljoin("https://www.jw.org", asset_url) if not urlsplit(asset_url).netloc else asset_url
                 assets.append((tag, attribute_name, full_url))
 
     # Download assets and modify their hrefs
