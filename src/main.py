@@ -1,12 +1,12 @@
 import os
-from bs4 import BeautifulSoup
 import requests
-import requests_cache
 import shutil
 import logging
-import sys
 import time
 from urllib.parse import urljoin, urlsplit, urlparse, urlunparse
+from bs4 import BeautifulSoup
+import requests_cache
+import sys
 from playwright.sync_api import sync_playwright
 
 language = "es"
@@ -38,6 +38,9 @@ def download_asset(url, local_path):
     local_dir = os.path.dirname(local_path)
     if not os.path.exists(local_dir):
         os.makedirs(local_dir)
+    filename = os.path.basename(urlparse(url).path)
+    logger.info(f"Downloading asset {filename}")
+    local_path = os.path.join(local_dir, filename)
     with requests.get(url, stream=True, timeout=120) as r:
         with open(local_path, "wb") as f:
             shutil.copyfileobj(r.raw, f)
