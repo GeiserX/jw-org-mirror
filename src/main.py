@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import requests_cache
 import sys
 from playwright.sync_api import sync_playwright
+import validators
 
 language = "es"
 fulldir = "/jworg"
@@ -18,6 +19,14 @@ logFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(mes
 consoleHandler = logging.StreamHandler(sys.stdout)
 consoleHandler.setFormatter(logFormatter)
 logger.addHandler(consoleHandler)
+
+def is_valid_url(url):
+    return validators.url(url)
+
+def is_jw_language_url(url):
+    # Checks if the url belongs to the language-specific jw.org domain
+    parsed_url = urlsplit(url)
+    return parsed_url.netloc == "www.jw.org" and parsed_url.path.startswith(f"/{language}/")
 
 def get_sitemap():
     requests_cache.install_cache(fulldir + "/" + language + '/sitemap')
@@ -33,6 +42,10 @@ def get_sitemap():
     return links
 
 def download_asset(url, local_path):
+    if os.path.exists(local_path):
+        logger.info(f"Asset already downloaded: {local_path}")
+        return
+    
     logger.info(f"Downloading asset {url}")
     local_dir = os.path.dirname(local_path)
     filename = os.path.basename(urlparse(url).path) or 'index.html'
@@ -42,14 +55,29 @@ def download_asset(url, local_path):
         os.makedirs(local_dir)
         
     with requests.get(url, stream=True, timeout=120) as r:
+        r.raise_for_status()  # to raise HTTPError for bad responses
         with open(local_path, "wb") as f:
-            shutil.copyfileobj(r.raw, f)
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:  # filter out keep-alive chunks
+                    f.write(chunk)
+
+    logger.info(f"Finished downloading asset {url} to {local_path}")
+
+
 
 def is_asset_url(url, base_url):
+    # Extract the extension from the URL
     url_parts = urlsplit(url)
+    if not url_parts.netloc and url.startswith('/'):  # Relative URLs
+        return True
+    
     if url_parts.netloc:  # Full URLs
-        return any(substring in url_parts.netloc for substring in ["akamai", "jw-cdn"]) or (url_parts.netloc == urlsplit(base_url).netloc and ("." in url_parts.path or url_parts.path in ["/", ""]))
-    return True  # Relative URLs are also assets
+        # Check for specific substrings in netloc
+        if any(substring in url_parts.netloc for substring in ["akamai", "jw-cdn"]):
+            return True
+        # Check if it is on the same domain and has a file-like path
+        return url_parts.netloc == urlsplit(base_url).netloc and (
+            '.' in url_parts.path.split('/')[-1])
 
 def download_webpage(url, context):
     page = context.new_page()
@@ -75,7 +103,8 @@ def download_webpage(url, context):
             asset_url = tag[attribute_name]
             if is_asset_url(asset_url, url):
                 full_url = urljoin("https://www.jw.org", asset_url) if not urlsplit(asset_url).netloc else asset_url
-                assets.append((tag, attribute_name, full_url))
+                if is_valid_url(full_url):  # Only add valid URLs
+                    assets.append((tag, attribute_name, full_url))
 
     # Download assets and modify their hrefs
     for tag_info in assets:
@@ -83,6 +112,10 @@ def download_webpage(url, context):
         attribute_name = tag_info[1]
         asset_url = tag_info[2]
 
+        # Skip non-assets like viewport or other non-downloadable meta tags
+        if tag.name == "meta" and "viewport" in tag.get("name", "").lower():
+            continue
+        
         asset_basename = os.path.basename(urlparse(asset_url).path) or 'index.html'
         if '?' in asset_basename:
             asset_basename = asset_basename.split('?')[0]
@@ -111,7 +144,7 @@ def download_webpage(url, context):
         for tag in bs_page.find_all(tag_name, **{attribute_name: True}):
             if tag[attribute_name].startswith("https://www.jw.org/"):
                 tag[attribute_name] = tag[attribute_name].replace("https://www.jw.org", "https://jw.filmmonitor.co.uk")
-    
+
     # Cookies deletion
     for lnc_popup in bs_page.find_all("div", class_="lnc-firstRunPopup"):
         lnc_popup.decompose()
