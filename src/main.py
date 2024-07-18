@@ -1,6 +1,5 @@
 import os
 import requests
-import shutil
 import logging
 import time
 import sqlite3
@@ -44,25 +43,33 @@ def get_sitemap():
 
 def download_asset(url, local_path):
     if os.path.exists(local_path):
-        logger.info(f"Asset already downloaded: {local_path}")
+        logger.info(f"Asset already exists: {local_path}")
         return
     
     logger.info(f"Downloading asset {url}")
     local_dir = os.path.dirname(local_path)
-    filename = os.path.basename(urlparse(url).path) or 'index.html'
+
+    filename = os.path.basename(urlparse(url).path)
+    if not filename:  # for URLs that do not end with a file
+        filename = 'index.html'
+
+    # Adjust for cast_sender.js
+    if 'cast_sender.js' in filename:
+        filename = 'cast_sender.js'
+
     local_path = os.path.join(local_dir, filename)
     
     if not os.path.exists(local_dir):
         os.makedirs(local_dir)
-        
+    
     with requests.get(url, stream=True, timeout=120) as r:
-        r.raise_for_status()  # to raise HTTPError for bad responses
+        r.raise_for_status()  # Raise HTTPError for bad responses
         with open(local_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
-                if chunk:  # filter out keep-alive chunks
+                if chunk:  # Filter out keep-alive chunks
                     f.write(chunk)
 
-    logger.info(f"Finished downloading asset {url} to {local_path}")
+    logger.info(f"Downloaded asset {url} to {local_path}")
 
 def is_asset_url(url, base_url):
     url_parts = urlsplit(url)
@@ -70,9 +77,9 @@ def is_asset_url(url, base_url):
         return True
     
     if url_parts.netloc:  # Full URLs
-        if any(substring in url_parts.netloc for substring in ["akamai", "jw-cdn"]):
+        if any(substring in url_parts.netloc for substring in ["akamai", "jw-cdn", "gstatic.com"]):  # Added gstatic.com
             return True
-        return url_parts.netloc == urlsplit(base_url).netloc and ('.' in url_parts.path.split('/')[-1])
+        return url_parts.netloc == urlsplit(base_url).netloc and ('.' in url_parts.path.split('/')[-1] or '?' in url)
 
 def init_db():
     conn = sqlite3.connect(database_path)
@@ -132,68 +139,72 @@ def download_webpage(url, context):
     page.goto(url, wait_until='load')
     
     local_url = urlparse(url)._replace(netloc="", scheme="")
-    local_folder = fulldir + urlunparse(local_url) + "/"
+    local_folder = fulldir + urlunparse(local_url)
+    
+    # Ensure directory exists
     os.makedirs(local_folder, exist_ok=True)
-
+    
+    # Allow time for page content to fully load
     time.sleep(3)
     page_content = page.content()
     bs_page = BeautifulSoup(page_content, "html.parser")
 
     # Collect asset URLs
     assets = []
-    for tag_name, attribute_name in [("link", "href"), ("meta", "content"), ("script", "src"), ("video", "src")]:
+    for tag_name, attribute_name in [("link", "href"), ("meta", "content"), ("script", "src"), ("video", "src"), ("img", "src")]:
         for tag in bs_page.find_all(tag_name, **{attribute_name: True}):
             asset_url = tag[attribute_name]
             if is_asset_url(asset_url, url):
                 full_url = urljoin("https://www.jw.org", asset_url) if not urlsplit(asset_url).netloc else asset_url
-                if is_valid_url(full_url):  # Only add valid URLs
+                if is_valid_url(full_url):
                     assets.append((tag, attribute_name, full_url))
 
-    # Download assets and modify their hrefs
-    for tag_info in assets:
-        tag = tag_info[0]
-        attribute_name = tag_info[1]
-        asset_url = tag_info[2]
-        
-        # Skip non-assets like viewport or other non-downloadable meta tags
-        if tag.name == "meta" and "viewport" in tag.get("name", "").lower():
-            continue
-        
+    # Download assets and update URLs in the HTML
+    for tag, attribute_name, asset_url in assets:
         asset_basename = os.path.basename(urlparse(asset_url).path) or 'index.html'
+        
+        # Remove URL parameters for local asset names if any
         if '?' in asset_basename:
             asset_basename = asset_basename.split('?')[0]
+        
+        # Special handling for 'cast_sender.js'
+        if 'cast_sender.js' in asset_basename:
+            asset_basename = 'cast_sender.js'
 
+        # Create local paths and download
         local_asset_path = os.path.join(fulldir, "assets", asset_basename)
         full_asset_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
-
         download_asset(asset_url, local_asset_path)
+        
+        # Update HTML tag with new URL
         tag[attribute_name] = full_asset_url
 
-    local_folder_name = local_folder + "index.html"
-
-    # href modification
-    for tag_name, attribute_name in [("a", "href"), ("link", "href"), ("base", "href")]:
-        for tag in bs_page.find_all(tag_name, **{attribute_name: True}):
-            if tag[attribute_name].startswith("https://www.jw.org/"):
-                tag[attribute_name] = tag[attribute_name].replace("https://www.jw.org", "https://jw.filmmonitor.co.uk")
+    # Modify hrefs in <a>, <link>, <base> tags
+    for tag in bs_page.find_all(["a", "link", "base"], href=True):
+        href = tag['href']
+        if href.startswith("https://www.jw.org/"):
+            tag['href'] = href.replace("https://www.jw.org", "https://jw.filmmonitor.co.uk")
+        elif href.startswith("/"):
+            tag['href'] = urljoin(f"https://jw.filmmonitor.co.uk/{language}", href.lstrip("/"))
 
     # Collect new jw.org/es/ links
-    new_links = []
+    new_links = set()
     for tag in bs_page.find_all("a", href=True):
-        link = tag['href']
-        full_link = urljoin(url, link)
-        if is_jw_language_url(full_link):
-            new_links.append(full_link)
+        link = urljoin(url, tag['href'])
+        if is_jw_language_url(link):
+            new_links.add(link)
 
     add_urls_to_db(new_links)
 
-    # Cookies deletion
+    # Remove unwanted popups
     for lnc_popup in bs_page.find_all("div", class_="lnc-firstRunPopup"):
         lnc_popup.decompose()
 
-    # Save file
-    with open(local_folder_name, "w", encoding="utf-8") as file:
+    # Save modified HTML content to local file
+    local_file_name = os.path.join(local_folder, "index.html")
+    with open(local_file_name, "w", encoding="utf-8") as file:
         file.write(str(bs_page))
+
 
 if __name__ == '__main__':
     if not os.path.exists(fulldir):
@@ -203,7 +214,6 @@ if __name__ == '__main__':
     init_db()
     
     original_links = get_sitemap()
-    #add_urls_to_db("https://www.jw.org/es/biblioteca/videos/ebtv/respuestas-grandes-preguntas-vida/") # Test video
     add_urls_to_db(original_links)
     if "https://www.jw.org/" + language not in original_links:
         add_url_to_db("https://www.jw.org/" + language)  # Add the main page if not already in the sitemap
