@@ -204,7 +204,9 @@ def download_webpage(url, context):
     local_file_name = os.path.join(local_folder, "index.html")
     with open(local_file_name, "w", encoding="utf-8") as file:
         file.write(str(bs_page))
-
+    
+    # Close the page to free up memory
+    page.close()
 
 if __name__ == '__main__':
     if not os.path.exists(fulldir):
@@ -223,6 +225,7 @@ if __name__ == '__main__':
         "Accept-Language": "en-GB,en-NZ;q=0.9,en-AU;q=0.8,en;q=0.7,en-US;q=0.6",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win32; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
+
     with sync_playwright() as p:
         browser = p.firefox.connect('ws://192.168.10.100:3030/firefox/playwright?token=YGxoYfrARhtkSVxyfbfLwHc9me4afP9VS3y89EVa')
         context = browser.new_context(extra_http_headers=headers)
