@@ -9,6 +9,7 @@ import requests_cache
 import sys
 from playwright.sync_api import sync_playwright
 import validators
+import re
 
 language = "es"
 fulldir = "/jworg"
@@ -44,7 +45,7 @@ def get_sitemap():
 def download_asset(url, local_path):
     if os.path.exists(local_path):
         logger.info(f"Asset already exists: {local_path}")
-        return
+        return True  # Indicate that asset already exists and there's no need to download
     
     logger.info(f"Downloading asset {url}")
     local_dir = os.path.dirname(local_path)
@@ -52,24 +53,24 @@ def download_asset(url, local_path):
     filename = os.path.basename(urlparse(url).path)
     if not filename:  # for URLs that do not end with a file
         filename = 'index.html'
-
-    # Adjust for cast_sender.js
-    if 'cast_sender.js' in filename:
-        filename = 'cast_sender.js'
-
+    
     local_path = os.path.join(local_dir, filename)
     
     if not os.path.exists(local_dir):
         os.makedirs(local_dir)
     
-    with requests.get(url, stream=True, timeout=120) as r:
-        r.raise_for_status()  # Raise HTTPError for bad responses
-        with open(local_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:  # Filter out keep-alive chunks
-                    f.write(chunk)
-
-    logger.info(f"Downloaded asset {url} to {local_path}")
+    try:
+        with requests.get(url, stream=True, timeout=120) as r:
+            r.raise_for_status()  # Raise HTTPError for bad responses
+            with open(local_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:  # Filter out keep-alive chunks
+                        f.write(chunk)
+        logger.info(f"Downloaded asset {url} to {local_path}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to download {url}: {str(e)}")
+        return False
 
 def is_asset_url(url, base_url):
     url_parts = urlsplit(url)
@@ -77,7 +78,7 @@ def is_asset_url(url, base_url):
         return True
     
     if url_parts.netloc:  # Full URLs
-        if any(substring in url_parts.netloc for substring in ["akamai", "jw-cdn", "gstatic.com"]):  # Added gstatic.com
+        if any(substring in url_parts.netloc for substring in ["akamaihd.net", "jw-cdn", "gstatic.com"]):  # Added gstatic.com
             return True
         return url_parts.netloc == urlsplit(base_url).netloc and ('.' in url_parts.path.split('/')[-1] or '?' in url)
 
@@ -151,15 +152,90 @@ def download_webpage(url, context):
 
     # Collect asset URLs
     assets = []
+    css_assets = []
+    
     for tag_name, attribute_name in [("link", "href"), ("meta", "content"), ("script", "src"), ("video", "src"), ("img", "src")]:
         for tag in bs_page.find_all(tag_name, **{attribute_name: True}):
             asset_url = tag[attribute_name]
             if is_asset_url(asset_url, url):
                 full_url = urljoin("https://www.jw.org", asset_url) if not urlsplit(asset_url).netloc else asset_url
                 if is_valid_url(full_url):
-                    assets.append((tag, attribute_name, full_url))
+                    if tag_name == "link" and tag.get("rel") == ["stylesheet"]:
+                        css_assets.append((tag, attribute_name, full_url))
+                    else:
+                        assets.append((tag, attribute_name, full_url))
 
-    # Download assets and update URLs in the HTML
+    # Process and download CSS assets
+    for tag, attribute_name, css_url in css_assets:
+        logger.info(f"Processing CSS asset {css_url}")
+        css_filename = os.path.basename(urlparse(css_url).path)
+        local_css_path = os.path.join(fulldir, "assets", css_filename)
+        
+        # Download CSS file
+        if not download_asset(css_url, local_css_path):
+            logger.error(f"Failed to download CSS file {css_url}. Skipping modifications.")
+            continue
+
+        # Read and modify CSS content
+        with open(local_css_path, "r", encoding="utf-8") as css_file:
+            css_content = css_file.read()
+
+        # Find all URLs in CSS content, including relative ones
+        css_urls = re.findall(r'url\(["\']?(.*?)["\']?\)', css_content)
+        font_assets = []
+
+        # Fallback base URLs for assets if the first attempt fails
+        fallback_base_urls = [
+            "https://assetsnffrgf-a.akamaihd.net",
+            "https://b.jw-cdn.org/code/media-player/"
+        ]
+
+        # Download fonts and update URLs in CSS content
+        for font_url in css_urls:
+            # If URL is already base64, skip downloading and continue
+            if font_url.startswith('data:'):
+                continue
+            
+            # Determine full URL for download
+            if not urlsplit(font_url).netloc:
+                # Asset is relative, convert to full URL
+                full_font_url = urljoin(css_url, font_url)
+            else:
+                # Asset is already a full URL
+                full_font_url = font_url
+
+            asset_basename = os.path.basename(urlparse(full_font_url).path.split('?')[0])
+            local_font_path = os.path.join(fulldir, "assets", asset_basename)
+
+            # Check if local asset already exists before downloading
+            if os.path.exists(local_font_path):
+                logger.info(f"Asset already exists locally: {local_font_path}")
+                new_font_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
+                css_content = css_content.replace(font_url, new_font_url)
+                continue
+
+            asset_downloaded = False
+            for base_url in fallback_base_urls:
+                if is_valid_url(full_font_url):
+                    try:
+                        if download_asset(full_font_url, local_font_path):
+                            asset_downloaded = True
+                            new_font_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
+                            css_content = css_content.replace(font_url, new_font_url)
+                            break  # Exit loop as soon as one download succeeds
+                    except Exception as e:
+                        logger.error(f"Failed to download {full_font_url}: {str(e)}")
+            if not asset_downloaded:
+                logger.error(f"Failed to download asset {font_url} from all base URLs.")
+
+        # Save modified CSS content to file
+        with open(local_css_path, "w", encoding="utf-8") as css_file:
+            css_file.write(css_content)
+
+        # Update the CSS link in HTML
+        tag[attribute_name] = f"https://jw.filmmonitor.co.uk/assets/{css_filename}"
+
+    # Download other assets and update URLs in the HTML
     for tag, attribute_name, asset_url in assets:
         asset_basename = os.path.basename(urlparse(asset_url).path) or 'index.html'
         
@@ -173,11 +249,23 @@ def download_webpage(url, context):
 
         # Create local paths and download
         local_asset_path = os.path.join(fulldir, "assets", asset_basename)
-        full_asset_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
-        download_asset(asset_url, local_asset_path)
+        full_asset_url = asset_url  # Original URL for downloading
         
-        # Update HTML tag with new URL
-        tag[attribute_name] = full_asset_url
+        # Check if local asset already exists before downloading
+        if os.path.exists(local_asset_path):
+            logger.info(f"Asset already exists locally: {local_asset_path}")
+            new_asset_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
+            tag[attribute_name] = new_asset_url
+            continue
+
+        # Download the asset
+        if is_valid_url(full_asset_url):
+            try:
+                if download_asset(full_asset_url, local_asset_path):
+                    new_asset_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
+                    tag[attribute_name] = new_asset_url
+            except Exception as e:
+                logger.error(f"Failed to download {full_asset_url}: {str(e)}")
 
     # Modify hrefs in <a>, <link>, <base> tags
     for tag in bs_page.find_all(["a", "link", "base"], href=True):
