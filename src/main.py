@@ -3,7 +3,7 @@ import requests
 import logging
 import time
 import sqlite3
-from urllib.parse import urljoin, urlsplit, urlparse, urlunparse
+from urllib.parse import urljoin, urlsplit, urlparse, urlunparse, unquote
 from bs4 import BeautifulSoup
 import requests_cache
 import sys
@@ -13,10 +13,11 @@ import re
 
 language = "es"
 fulldir = "/jworg"
+mirror_base_url = "https://jw.filmmonitor.co.uk"  # Set your mirror base URL here
 
 logger = logging.getLogger('mylogger')
 logger.setLevel(logging.DEBUG)
-logFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logFormatter = logging.Formatter("%(asctime)s - %(name=s)s - %(levelname)s - %(message)s")
 consoleHandler = logging.StreamHandler(sys.stdout)
 consoleHandler.setFormatter(logFormatter)
 logger.addHandler(consoleHandler)
@@ -116,7 +117,7 @@ def mark_url_processed(url):
 def get_next_unprocessed_url():
     conn = sqlite3.connect(database_path)
     cur = conn.cursor()
-    cur.execute('SELECT url FROM urls WHERE processed = 0 LIMIT 1')
+    cur.execute('SELECT url FROM urls WHERE processed = 0 ORDER BY id LIMIT 1')
     result = cur.fetchone()
     conn.close()
     if result:
@@ -135,12 +136,23 @@ def add_urls_to_db(urls):
     conn.commit()
     conn.close()
 
+def insert_url_first(url):
+    conn = sqlite3.connect(database_path)
+    cur = conn.cursor()
+    try:
+        cur.execute('INSERT OR REPLACE INTO urls (id, url, processed) VALUES ((SELECT min(id) FROM urls) - 1, ?, 0)', (url,))
+    except sqlite3.IntegrityError:
+        # URL already exists
+        pass
+    conn.commit()
+    conn.close()
+
 def download_webpage(url, context):
     page = context.new_page()
     page.goto(url, wait_until='load')
     
     local_url = urlparse(url)._replace(netloc="", scheme="")
-    local_folder = fulldir + urlunparse(local_url)
+    local_folder = fulldir + urlunparse(map(unquote, local_url))
     
     # Ensure directory exists
     os.makedirs(local_folder, exist_ok=True)
@@ -210,7 +222,7 @@ def download_webpage(url, context):
             # Check if local asset already exists before downloading
             if os.path.exists(local_font_path):
                 logger.info(f"Asset already exists locally: {local_font_path}")
-                new_font_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
+                new_font_url = f"{mirror_base_url}/assets/{asset_basename}"
                 css_content = css_content.replace(font_url, new_font_url)
                 continue
 
@@ -220,7 +232,7 @@ def download_webpage(url, context):
                     try:
                         if download_asset(full_font_url, local_font_path):
                             asset_downloaded = True
-                            new_font_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
+                            new_font_url = f"{mirror_base_url}/assets/{asset_basename}"
                             css_content = css_content.replace(font_url, new_font_url)
                             break  # Exit loop as soon as one download succeeds
                     except Exception as e:
@@ -233,7 +245,7 @@ def download_webpage(url, context):
             css_file.write(css_content)
 
         # Update the CSS link in HTML
-        tag[attribute_name] = f"https://jw.filmmonitor.co.uk/assets/{css_filename}"
+        tag[attribute_name] = f"{mirror_base_url}/assets/{css_filename}"
 
     # Download other assets and update URLs in the HTML
     for tag, attribute_name, asset_url in assets:
@@ -254,7 +266,7 @@ def download_webpage(url, context):
         # Check if local asset already exists before downloading
         if os.path.exists(local_asset_path):
             logger.info(f"Asset already exists locally: {local_asset_path}")
-            new_asset_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
+            new_asset_url = f"{mirror_base_url}/assets/{asset_basename}"
             tag[attribute_name] = new_asset_url
             continue
 
@@ -262,7 +274,7 @@ def download_webpage(url, context):
         if is_valid_url(full_asset_url):
             try:
                 if download_asset(full_asset_url, local_asset_path):
-                    new_asset_url = f"https://jw.filmmonitor.co.uk/assets/{asset_basename}"
+                    new_asset_url = f"{mirror_base_url}/assets/{asset_basename}"
                     tag[attribute_name] = new_asset_url
             except Exception as e:
                 logger.error(f"Failed to download {full_asset_url}: {str(e)}")
@@ -271,9 +283,9 @@ def download_webpage(url, context):
     for tag in bs_page.find_all(["a", "link", "base"], href=True):
         href = tag['href']
         if href.startswith("https://www.jw.org/"):
-            tag['href'] = href.replace("https://www.jw.org", "https://jw.filmmonitor.co.uk")
+            tag['href'] = href.replace("https://www.jw.org", mirror_base_url)
         elif href.startswith("/"):
-            tag['href'] = urljoin(f"https://jw.filmmonitor.co.uk/{language}", href.lstrip("/"))
+            tag['href'] = urljoin(f"{mirror_base_url}/{language}", href.lstrip("/"))
 
     # Collect new jw.org/es/ links
     new_links = set()
@@ -303,11 +315,17 @@ if __name__ == '__main__':
     # Initialize database
     init_db()
     
+    test_url = "https://www.jw.org/es/biblioteca/videos/#es/mediaitems/pub-jwbvod24_27_VIDEO"
+    
+    # Insert the test URL manually at the top
+    insert_url_first(test_url)
+
+    # Now, add other URLs
     original_links = get_sitemap()
     add_urls_to_db(original_links)
     if "https://www.jw.org/" + language not in original_links:
         add_url_to_db("https://www.jw.org/" + language)  # Add the main page if not already in the sitemap
-
+    
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "en-GB,en-NZ;q=0.9,en-AU;q=0.8,en;q=0.7,en-US;q=0.6",
