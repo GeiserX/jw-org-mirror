@@ -3,7 +3,7 @@ import requests
 import logging
 import time
 import sqlite3
-from urllib.parse import urljoin, urlsplit, urlparse, urlunparse, unquote
+from urllib.parse import urljoin, urlsplit, urlparse, urlunparse, unquote, quote
 from bs4 import BeautifulSoup
 import requests_cache
 import sys
@@ -13,11 +13,11 @@ import re
 
 language = "es"
 fulldir = "/jworg"
-mirror_base_url = "https://jw.filmmonitor.co.uk"  # Set your mirror base URL here
+mirror_base_url = "https://jw.filmmonitor.co.uk"
 
 logger = logging.getLogger('mylogger')
 logger.setLevel(logging.DEBUG)
-logFormatter = logging.Formatter("%(asctime)s - %(name=s)s - %(levelname)s - %(message)s")
+logFormatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 consoleHandler = logging.StreamHandler(sys.stdout)
 consoleHandler.setFormatter(logFormatter)
 logger.addHandler(consoleHandler)
@@ -77,9 +77,10 @@ def is_asset_url(url, base_url):
     url_parts = urlsplit(url)
     if not url_parts.netloc and url.startswith('/'):  # Relative URLs
         return True
-    
+
     if url_parts.netloc:  # Full URLs
-        if any(substring in url_parts.netloc for substring in ["akamaihd.net", "jw-cdn", "gstatic.com"]):  # Added gstatic.com
+        if any(substring in url_parts.netloc for substring in [
+                "akamaihd.net", "jw-cdn", "gstatic.com", "cloudfront.net"]):  # Added cloudfront.net
             return True
         return url_parts.netloc == urlsplit(base_url).netloc and ('.' in url_parts.path.split('/')[-1] or '?' in url)
 
@@ -140,7 +141,8 @@ def insert_url_first(url):
     conn = sqlite3.connect(database_path)
     cur = conn.cursor()
     try:
-        cur.execute('INSERT OR REPLACE INTO urls (id, url, processed) VALUES ((SELECT min(id) FROM urls) - 1, ?, 0)', (url,))
+        # Insert the new URL with an ID less than the minimum ID currently in the database
+        cur.execute('INSERT OR REPLACE INTO urls (id, url, processed) VALUES ((SELECT MIN(id) FROM urls) - 1, ?, 0)', (url,))
     except sqlite3.IntegrityError:
         # URL already exists
         pass
@@ -148,24 +150,23 @@ def insert_url_first(url):
     conn.close()
 
 def download_webpage(url, context):
+    encoded_url = quote(url, safe='/:#?&=@[]!$&\'()*+,;')
+
     page = context.new_page()
-    page.goto(url, wait_until='load')
-    
+    page.goto(encoded_url, wait_until='load')  
+
     local_url = urlparse(url)._replace(netloc="", scheme="")
     local_folder = fulldir + urlunparse(map(unquote, local_url))
-    
-    # Ensure directory exists
+
     os.makedirs(local_folder, exist_ok=True)
-    
-    # Allow time for page content to fully load
+
     time.sleep(3)
     page_content = page.content()
     bs_page = BeautifulSoup(page_content, "html.parser")
 
-    # Collect asset URLs
     assets = []
     css_assets = []
-    
+
     for tag_name, attribute_name in [("link", "href"), ("meta", "content"), ("script", "src"), ("video", "src"), ("img", "src")]:
         for tag in bs_page.find_all(tag_name, **{attribute_name: True}):
             asset_url = tag[attribute_name]
@@ -177,100 +178,24 @@ def download_webpage(url, context):
                     else:
                         assets.append((tag, attribute_name, full_url))
 
-    # Process and download CSS assets
-    for tag, attribute_name, css_url in css_assets:
-        logger.info(f"Processing CSS asset {css_url}")
-        css_filename = os.path.basename(urlparse(css_url).path)
-        local_css_path = os.path.join(fulldir, "assets", css_filename)
+    for tag, attribute_name, full_url in assets:
+        asset_basename = os.path.basename(urlparse(full_url).path) or 'index.html'
         
-        # Download CSS file
-        if not download_asset(css_url, local_css_path):
-            logger.error(f"Failed to download CSS file {css_url}. Skipping modifications.")
-            continue
-
-        # Read and modify CSS content
-        with open(local_css_path, "r", encoding="utf-8") as css_file:
-            css_content = css_file.read()
-
-        # Find all URLs in CSS content, including relative ones
-        css_urls = re.findall(r'url\(["\']?(.*?)["\']?\)', css_content)
-        font_assets = []
-
-        # Fallback base URLs for assets if the first attempt fails
-        fallback_base_urls = [
-            "https://assetsnffrgf-a.akamaihd.net",
-            "https://b.jw-cdn.org/code/media-player/"
-        ]
-
-        # Download fonts and update URLs in CSS content
-        for font_url in css_urls:
-            # If URL is already base64, skip downloading and continue
-            if font_url.startswith('data:'):
-                continue
-            
-            # Determine full URL for download
-            if not urlsplit(font_url).netloc:
-                # Asset is relative, convert to full URL
-                full_font_url = urljoin(css_url, font_url)
-            else:
-                # Asset is already a full URL
-                full_font_url = font_url
-
-            asset_basename = os.path.basename(urlparse(full_font_url).path.split('?')[0])
-            local_font_path = os.path.join(fulldir, "assets", asset_basename)
-
-            # Check if local asset already exists before downloading
-            if os.path.exists(local_font_path):
-                logger.info(f"Asset already exists locally: {local_font_path}")
-                new_font_url = f"{mirror_base_url}/assets/{asset_basename}"
-                css_content = css_content.replace(font_url, new_font_url)
-                continue
-
-            asset_downloaded = False
-            for base_url in fallback_base_urls:
-                if is_valid_url(full_font_url):
-                    try:
-                        if download_asset(full_font_url, local_font_path):
-                            asset_downloaded = True
-                            new_font_url = f"{mirror_base_url}/assets/{asset_basename}"
-                            css_content = css_content.replace(font_url, new_font_url)
-                            break  # Exit loop as soon as one download succeeds
-                    except Exception as e:
-                        logger.error(f"Failed to download {full_font_url}: {str(e)}")
-            if not asset_downloaded:
-                logger.error(f"Failed to download asset {font_url} from all base URLs.")
-
-        # Save modified CSS content to file
-        with open(local_css_path, "w", encoding="utf-8") as css_file:
-            css_file.write(css_content)
-
-        # Update the CSS link in HTML
-        tag[attribute_name] = f"{mirror_base_url}/assets/{css_filename}"
-
-    # Download other assets and update URLs in the HTML
-    for tag, attribute_name, asset_url in assets:
-        asset_basename = os.path.basename(urlparse(asset_url).path) or 'index.html'
-        
-        # Remove URL parameters for local asset names if any
         if '?' in asset_basename:
             asset_basename = asset_basename.split('?')[0]
         
-        # Special handling for 'cast_sender.js'
         if 'cast_sender.js' in asset_basename:
             asset_basename = 'cast_sender.js'
 
-        # Create local paths and download
         local_asset_path = os.path.join(fulldir, "assets", asset_basename)
-        full_asset_url = asset_url  # Original URL for downloading
+        full_asset_url = full_url
         
-        # Check if local asset already exists before downloading
         if os.path.exists(local_asset_path):
             logger.info(f"Asset already exists locally: {local_asset_path}")
             new_asset_url = f"{mirror_base_url}/assets/{asset_basename}"
             tag[attribute_name] = new_asset_url
             continue
 
-        # Download the asset
         if is_valid_url(full_asset_url):
             try:
                 if download_asset(full_asset_url, local_asset_path):
@@ -279,7 +204,6 @@ def download_webpage(url, context):
             except Exception as e:
                 logger.error(f"Failed to download {full_asset_url}: {str(e)}")
 
-    # Modify hrefs in <a>, <link>, <base> tags
     for tag in bs_page.find_all(["a", "link", "base"], href=True):
         href = tag['href']
         if href.startswith("https://www.jw.org/"):
@@ -287,7 +211,6 @@ def download_webpage(url, context):
         elif href.startswith("/"):
             tag['href'] = urljoin(f"{mirror_base_url}/{language}", href.lstrip("/"))
 
-    # Collect new jw.org/es/ links
     new_links = set()
     for tag in bs_page.find_all("a", href=True):
         link = urljoin(url, tag['href'])
@@ -296,36 +219,69 @@ def download_webpage(url, context):
 
     add_urls_to_db(new_links)
 
-    # Remove unwanted popups
     for lnc_popup in bs_page.find_all("div", class_="lnc-firstRunPopup"):
         lnc_popup.decompose()
 
-    # Save modified HTML content to local file
     local_file_name = os.path.join(local_folder, "index.html")
     with open(local_file_name, "w", encoding="utf-8") as file:
         file.write(str(bs_page))
     
-    # Close the page to free up memory
     page.close()
+
+def download_and_update_scripts(script_tags, fulldir, mirror_base_url):
+    for tag in script_tags:
+        script_url = tag['src']
+        asset_basename = os.path.basename(urlparse(script_url).path)
+        
+        local_asset_path = os.path.join(fulldir, "assets", asset_basename)
+        if not download_asset(script_url, local_asset_path):
+            continue
+
+        # Update script URL in the HTML
+        new_script_url = f"{mirror_base_url}/assets/{asset_basename}"
+        tag['src'] = new_script_url
+
+        # Process script file to download and replace https asset links
+        with open(local_asset_path, 'r', encoding='utf-8') as file:
+            script_content = file.read()
+
+        updated_content = replace_https_links(script_content, fulldir, mirror_base_url)
+
+        # Save updated script content
+        with open(local_asset_path, 'w', encoding='utf-8') as file:
+            file.write(updated_content)
+
+def replace_https_links(content, fulldir, mirror_base_url):
+    https_links = re.findall(r'https://[^\s\'"]+', content)
+    
+    for https_link in https_links:
+        asset_basename = os.path.basename(urlparse(https_link).path)
+        local_asset_path = os.path.join(fulldir, "assets", asset_basename)
+
+        if download_asset(https_link, local_asset_path):
+            new_asset_url = f"{mirror_base_url}/assets/{asset_basename}"
+            content = content.replace(https_link, new_asset_url)
+    
+    return content
 
 if __name__ == '__main__':
     if not os.path.exists(fulldir):
         os.makedirs(fulldir)
         
-    # Initialize database
     init_db()
-    
-    test_url = "https://www.jw.org/es/biblioteca/videos/#es/mediaitems/pub-jwbvod24_27_VIDEO"
-    
-    # Insert the test URL manually at the top
-    insert_url_first(test_url)
 
-    # Now, add other URLs
+  #  test_url3 = "https://www.jw.org/es/biblioteca/videos/#es/mediaitems/pub-jwbvod24_27_VIDEO"
+  #  test_url2 = "https://www.jw.org/es/biblioteca/videos/#es/mediaitems/VODPgmEvtMorningWorship/pub-jwbvod24_27_VIDEO"
+  #  test_url= "https://www.jw.org/es/biblioteca/videos/#es/home"
+
+    # insert_url_first(test_url)
+    # insert_url_first(test_url2)
+
     original_links = get_sitemap()
     add_urls_to_db(original_links)
     if "https://www.jw.org/" + language not in original_links:
-        add_url_to_db("https://www.jw.org/" + language)  # Add the main page if not already in the sitemap
-    
+        add_url_to_db("https://www.jw.org/" + language)
+
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "en-GB,en-NZ;q=0.9,en-AU;q=0.8,en;q=0.7,en-US;q=0.6",
