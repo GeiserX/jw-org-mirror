@@ -10,10 +10,12 @@ import sys
 from playwright.sync_api import sync_playwright
 import validators
 import re
+import random
 
-language = "es"
-fulldir = "/jworg"
-mirror_base_url = "https://jw.filmmonitor.co.uk"
+JW_BROWSERLESS_KEY = os.environ.get('JW_BROWSERLESS_KEY')
+JW_LANG = os.environ.get('JW_LANG', "es")
+JW_DIR = os.environ.get('JW_DIR', "/jworg")
+JW_LOCAL_BASE_URL = os.environ.get('JW_LOCAL_BASE_URL', "https://jw.filmmonitor.co.uk")
 
 logger = logging.getLogger('mylogger')
 logger.setLevel(logging.DEBUG)
@@ -22,21 +24,21 @@ consoleHandler = logging.StreamHandler(sys.stdout)
 consoleHandler.setFormatter(logFormatter)
 logger.addHandler(consoleHandler)
 
-database_path = os.path.join(fulldir, 'urls.db')
+database_path = os.path.join(JW_DIR, 'urls.db')
 
 def is_valid_url(url):
     return validators.url(url)
 
 def is_jw_language_url(url):
     parsed_url = urlsplit(url)
-    return parsed_url.netloc == "www.jw.org" and parsed_url.path.startswith(f"/{language}/")
+    return parsed_url.netloc == "www.jw.org" and parsed_url.path.startswith(f"/{JW_LANG}/")
 
 def get_sitemap():
-    requests_cache.install_cache(fulldir + "/" + language + '/sitemap')
+    requests_cache.install_cache(JW_DIR + "/" + JW_LANG + '/sitemap')
     session = requests_cache.CachedSession('sitemap', expire_after=86400)  # 24h
     jw_org = "https://www.jw.org/"
-    links = [jw_org + language]  # Add main page
-    response = requests.get(jw_org + language + "/sitemap.xml")
+    links = [jw_org + JW_LANG]  # Add main page
+    response = requests.get(jw_org + JW_LANG + "/sitemap.xml")
     soup = BeautifulSoup(response.text, features="xml")
     url_locs = soup.find_all("loc")
     for url in url_locs:
@@ -46,13 +48,13 @@ def get_sitemap():
 def download_asset(url, local_path):
     if os.path.exists(local_path):
         logger.info(f"Asset already exists: {local_path}")
-        return True  # Indicate that asset already exists and there's no need to download
+        return True
     
     logger.info(f"Downloading asset {url}")
     local_dir = os.path.dirname(local_path)
 
     filename = os.path.basename(urlparse(url).path)
-    if not filename:  # for URLs that do not end with a file
+    if not filename:
         filename = 'index.html'
     
     local_path = os.path.join(local_dir, filename)
@@ -65,7 +67,7 @@ def download_asset(url, local_path):
             r.raise_for_status()  # Raise HTTPError for bad responses
             with open(local_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:  # Filter out keep-alive chunks
+                    if chunk:
                         f.write(chunk)
         logger.info(f"Downloaded asset {url} to {local_path}")
         return True
@@ -75,12 +77,12 @@ def download_asset(url, local_path):
 
 def is_asset_url(url, base_url):
     url_parts = urlsplit(url)
-    if not url_parts.netloc and url.startswith('/'):  # Relative URLs
+    if not url_parts.netloc and url.startswith('/'):
         return True
 
-    if url_parts.netloc:  # Full URLs
+    if url_parts.netloc:
         if any(substring in url_parts.netloc for substring in [
-                "akamaihd.net", "jw-cdn", "gstatic.com", "cloudfront.net"]):  # Added cloudfront.net
+                "akamaihd.net", "jw-cdn", "gstatic.com", "cloudfront.net"]):
             return True
         return url_parts.netloc == urlsplit(base_url).netloc and ('.' in url_parts.path.split('/')[-1] or '?' in url)
 
@@ -103,7 +105,6 @@ def add_url_to_db(url):
     try:
         cur.execute('INSERT INTO urls (url, processed) VALUES (?, 0)', (url,))
     except sqlite3.IntegrityError:
-        # URL already exists
         pass
     conn.commit()
     conn.close()
@@ -132,7 +133,6 @@ def add_urls_to_db(urls):
         try:
             cur.execute('INSERT INTO urls (url, processed) VALUES (?, 0)', (url,))
         except sqlite3.IntegrityError:
-            # URL already exists
             continue
     conn.commit()
     conn.close()
@@ -141,26 +141,32 @@ def insert_url_first(url):
     conn = sqlite3.connect(database_path)
     cur = conn.cursor()
     try:
-        # Insert the new URL with an ID less than the minimum ID currently in the database
         cur.execute('INSERT OR REPLACE INTO urls (id, url, processed) VALUES ((SELECT MIN(id) FROM urls) - 1, ?, 0)', (url,))
     except sqlite3.IntegrityError:
-        # URL already exists
         pass
     conn.commit()
     conn.close()
 
-def download_webpage(url, context):
+def download_webpage(url, context, retry_count=5, backoff_factor=0.5):
     encoded_url = quote(url, safe='/:#?&=@[]!$&\'()*+,;')
-
-    page = context.new_page()
-    page.goto(encoded_url, wait_until='load')  
+    for attempt in range(retry_count):
+        try:
+            page = context.new_page()
+            page.goto(encoded_url, wait_until='load')
+            break
+        except Exception as e:
+            wait_time = backoff_factor * (2 ** attempt) + random.uniform(0, 1)
+            logger.error(f"Failed to process {url} on attempt {attempt+1}: {str(e)}. Retrying in {wait_time} seconds.")
+            time.sleep(wait_time)
+    else:
+        logger.error(f"Failed to process {url} after {retry_count} attempts.")
+        return
 
     local_url = urlparse(url)._replace(netloc="", scheme="")
-    local_folder = fulldir + urlunparse(map(unquote, local_url))
+    local_folder = JW_DIR + urlunparse(map(unquote, local_url))
 
     os.makedirs(local_folder, exist_ok=True)
-
-    time.sleep(3)
+    time.sleep(5)
     page_content = page.content()
     bs_page = BeautifulSoup(page_content, "html.parser")
 
@@ -187,19 +193,19 @@ def download_webpage(url, context):
         if 'cast_sender.js' in asset_basename:
             asset_basename = 'cast_sender.js'
 
-        local_asset_path = os.path.join(fulldir, "assets", asset_basename)
+        local_asset_path = os.path.join(JW_DIR, "assets", asset_basename)
         full_asset_url = full_url
         
         if os.path.exists(local_asset_path):
             logger.info(f"Asset already exists locally: {local_asset_path}")
-            new_asset_url = f"{mirror_base_url}/assets/{asset_basename}"
+            new_asset_url = f"{JW_LOCAL_BASE_URL}/assets/{asset_basename}"
             tag[attribute_name] = new_asset_url
             continue
 
         if is_valid_url(full_asset_url):
             try:
                 if download_asset(full_asset_url, local_asset_path):
-                    new_asset_url = f"{mirror_base_url}/assets/{asset_basename}"
+                    new_asset_url = f"{JW_LOCAL_BASE_URL}/assets/{asset_basename}"
                     tag[attribute_name] = new_asset_url
             except Exception as e:
                 logger.error(f"Failed to download {full_asset_url}: {str(e)}")
@@ -207,9 +213,9 @@ def download_webpage(url, context):
     for tag in bs_page.find_all(["a", "link", "base"], href=True):
         href = tag['href']
         if href.startswith("https://www.jw.org/"):
-            tag['href'] = href.replace("https://www.jw.org", mirror_base_url)
+            tag['href'] = href.replace("https://www.jw.org", JW_LOCAL_BASE_URL)
         elif href.startswith("/"):
-            tag['href'] = urljoin(f"{mirror_base_url}/{language}", href.lstrip("/"))
+            tag['href'] = urljoin(f"{JW_LOCAL_BASE_URL}/{JW_LANG}", href.lstrip("/"))
 
     new_links = set()
     for tag in bs_page.find_all("a", href=True):
@@ -228,59 +234,49 @@ def download_webpage(url, context):
     
     page.close()
 
-def download_and_update_scripts(script_tags, fulldir, mirror_base_url):
+def download_and_update_scripts(script_tags, JW_DIR, JW_LOCAL_BASE_URL):
     for tag in script_tags:
         script_url = tag['src']
         asset_basename = os.path.basename(urlparse(script_url).path)
         
-        local_asset_path = os.path.join(fulldir, "assets", asset_basename)
+        local_asset_path = os.path.join(JW_DIR, "assets", asset_basename)
         if not download_asset(script_url, local_asset_path):
             continue
 
-        # Update script URL in the HTML
-        new_script_url = f"{mirror_base_url}/assets/{asset_basename}"
+        new_script_url = f"{JW_LOCAL_BASE_URL}/assets/{asset_basename}"
         tag['src'] = new_script_url
 
-        # Process script file to download and replace https asset links
         with open(local_asset_path, 'r', encoding='utf-8') as file:
             script_content = file.read()
 
-        updated_content = replace_https_links(script_content, fulldir, mirror_base_url)
+        updated_content = replace_https_links(script_content, JW_DIR, JW_LOCAL_BASE_URL)
 
-        # Save updated script content
         with open(local_asset_path, 'w', encoding='utf-8') as file:
             file.write(updated_content)
 
-def replace_https_links(content, fulldir, mirror_base_url):
+def replace_https_links(content, JW_DIR, JW_LOCAL_BASE_URL):
     https_links = re.findall(r'https://[^\s\'"]+', content)
     
     for https_link in https_links:
         asset_basename = os.path.basename(urlparse(https_link).path)
-        local_asset_path = os.path.join(fulldir, "assets", asset_basename)
+        local_asset_path = os.path.join(JW_DIR, "assets", asset_basename)
 
         if download_asset(https_link, local_asset_path):
-            new_asset_url = f"{mirror_base_url}/assets/{asset_basename}"
+            new_asset_url = f"{JW_LOCAL_BASE_URL}/assets/{asset_basename}"
             content = content.replace(https_link, new_asset_url)
     
     return content
 
 if __name__ == '__main__':
-    if not os.path.exists(fulldir):
-        os.makedirs(fulldir)
+    if not os.path.exists(JW_DIR):
+        os.makedirs(JW_DIR)
         
     init_db()
 
-  #  test_url3 = "https://www.jw.org/es/biblioteca/videos/#es/mediaitems/pub-jwbvod24_27_VIDEO"
-  #  test_url2 = "https://www.jw.org/es/biblioteca/videos/#es/mediaitems/VODPgmEvtMorningWorship/pub-jwbvod24_27_VIDEO"
-  #  test_url= "https://www.jw.org/es/biblioteca/videos/#es/home"
-
-    # insert_url_first(test_url)
-    # insert_url_first(test_url2)
-
     original_links = get_sitemap()
     add_urls_to_db(original_links)
-    if "https://www.jw.org/" + language not in original_links:
-        add_url_to_db("https://www.jw.org/" + language)
+    if "https://www.jw.org/" + JW_LANG not in original_links:
+        add_url_to_db("https://www.jw.org/" + JW_LANG)
 
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -289,7 +285,7 @@ if __name__ == '__main__':
     }
 
     with sync_playwright() as p:
-        browser = p.firefox.connect('ws://192.168.10.100:3030/firefox/playwright?token=YGxoYfrARhtkSVxyfbfLwHc9me4afP9VS3y89EVa')
+        browser = p.firefox.connect('ws://192.168.10.100:3030/firefox/playwright?token={JW_BROWSERLESS_KEY}')
         context = browser.new_context(extra_http_headers=headers)
 
         while True:
@@ -304,5 +300,6 @@ if __name__ == '__main__':
                 mark_url_processed(link)
             except Exception as e:
                 logger.error(f"Failed to process {link}: {e}")
+                time.sleep(5)  # Add a delay before attempting the next URL as well
 
         browser.close()
