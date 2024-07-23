@@ -1,0 +1,15 @@
+services:
+  jw-org-mirror:
+    build: .
+    #image: drumsergio/jw-org-mirror:0.0.1
+    volumes:
+      - /ShareMedia/jworg:/jworg:rw #/mnt/user/ShareMedia used if used outside code-server - dind in use
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    privileged: true
+    environment:
+      - JW_BROWSERLESS_KEY=...
+      - JW_LANG=es
+      - JW_DIR=/jworg
+      - JW_LOCAL_BASE_URL=...

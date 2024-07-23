@@ -15,7 +15,7 @@ import random
 JW_BROWSERLESS_KEY = os.environ.get('JW_BROWSERLESS_KEY')
 JW_LANG = os.environ.get('JW_LANG', "es")
 JW_DIR = os.environ.get('JW_DIR', "/jworg")
-JW_LOCAL_BASE_URL = os.environ.get('JW_LOCAL_BASE_URL', "https://jw.filmmonitor.co.uk")
+JW_LOCAL_BASE_URL = os.environ.get('JW_LOCAL_BASE_URL')
 
 logger = logging.getLogger('mylogger')
 logger.setLevel(logging.DEBUG)
